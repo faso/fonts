@@ -1,0 +1,15 @@
+name: Release Scholia Mono
+
+# Manual: Actions → "Release Scholia Mono" → Run workflow. See release.yml.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: ./.github/workflows/release.yml
+    with:
+      font: scholia-mono

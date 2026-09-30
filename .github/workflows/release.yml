@@ -1,0 +1,84 @@
+name: Release a font
+
+# Reusable: called by release-<font>.yml. Packs <font>/fonts/* + LICENSE + README into
+# <Family>-<version>.zip and publishes a GitHub release tagged <font>-v<version>.
+# The version is the one inside the font files (the `version:` line of the .ductus source),
+# so every font is released on its own and a release needs the source version raised first.
+
+on:
+  workflow_call:
+    inputs:
+      font:
+        description: directory of the font (cabin-mono, goosey, rastral-mono, ...)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      FONT: ${{ inputs.font }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version from the font
+        id: meta
+        run: |
+          set -e
+          pip install --quiet fonttools
+          ttf=$(ls "$FONT"/fonts/*.ttf | grep -v NerdFont | head -n 1)
+          python3 - "$ttf" >> "$GITHUB_OUTPUT" <<'PY'
+          import re, sys
+          from fontTools.ttLib import TTFont
+          f = TTFont(sys.argv[1]); n = f['name']
+          family = n.getDebugName(16) or n.getDebugName(1)
+          version = re.search(r'(\d+\.\d+)', n.getDebugName(5)).group(1)
+          print(f"family={family}")
+          print(f"prefix={family.replace(' ', '')}")
+          print(f"version={version}")
+          PY
+          cat "$GITHUB_OUTPUT"
+
+      - name: Refuse to release a version twice
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ env.FONT }}-v${{ steps.meta.outputs.version }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists — raise the version: line in the .ductus source, rebuild, push, then run this again"
+            exit 1
+          fi
+
+      - name: Pack
+        env:
+          PREFIX: ${{ steps.meta.outputs.prefix }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          FAMILY: ${{ steps.meta.outputs.family }}
+        run: |
+          set -e
+          dir="$PREFIX-$VERSION"
+          mkdir -p "dist/$dir"
+          cp "$FONT"/fonts/*.ttf "$FONT"/LICENSE "$FONT"/README.md "dist/$dir/"
+          cp "$FONT"/fonts/*.woff2 "dist/$dir/" 2>/dev/null || true
+          (cd dist && zip -r -X "$dir.zip" "$dir")
+          {
+            echo "$FAMILY $VERSION"
+            echo
+            echo "Fonts from commit ${GITHUB_SHA::7}."
+            echo
+            echo '```'
+            (cd "dist/$dir" && ls -l --block-size=K *.ttf *.woff2 2>/dev/null | awk '{ printf "%-44s %s\n", $9, $5 }')
+            echo '```'
+          } > dist/notes.md
+          echo "zip=dist/$dir.zip" >> "$GITHUB_ENV"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ env.FONT }}-v${{ steps.meta.outputs.version }}
+          TITLE: ${{ steps.meta.outputs.family }} ${{ steps.meta.outputs.version }}
+        run: |
+          gh release create "$TAG" "$zip" --title "$TITLE" --notes-file dist/notes.md
